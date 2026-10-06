@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>ACLASS 打刻（カメラ）</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<!--
+  ACLASS 打刻 PCカメラ用ページ（GitHub Pagesに置く）
+  ・このファイルには秘密の情報は入っていません（公開リポジトリに置いてOK）
+  ・端末キー(d)とGASのURL(g)は、管理画面の「この端末を登録」で出るURLに付いてきます。
+    初回に開くとこのPCに覚えさせるので、2回目からは camera.html だけで開けます
+  ・記録はGAS（doPost）が行います。打刻ログ・当日タブ・番号の照合は今までと同じ
+-->
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1d2330; --sub:#6b7280; --in:#0f9d58; --out:#3949ab; --warn:#d93025; --line:#e3e5ea; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic UI","Meiryo",sans-serif; }
+  header { background:var(--ink); color:#fff; padding:12px 16px; display:flex; align-items:baseline; gap:12px; }
+  header .t { font-size:20px; font-weight:700; }
+  header .dev { font-size:12px; opacity:.7; }
+  header .clock { font-size:28px; font-weight:700; margin-left:auto; font-variant-numeric:tabular-nums; }
+  main { padding:16px; max-width:760px; margin:0 auto; }
+  .cam { position:relative; background:#000; border-radius:16px; overflow:hidden; aspect-ratio:4/3; }
+  .cam video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); display:block; }
+  .cam .frame { position:absolute; left:32%; top:22%; width:36%; aspect-ratio:1; border:4px dashed rgba(255,255,255,.8); border-radius:14px; }
+  .cam .guide { position:absolute; left:0; right:0; bottom:0; padding:16px; color:#fff; font-size:22px; font-weight:800; text-align:center; background:linear-gradient(transparent, rgba(0,0,0,.75)); }
+  .cam.off { display:flex; align-items:center; justify-content:center; cursor:pointer; }
+  .cam.off .start { color:#fff; font-size:24px; font-weight:800; text-align:center; padding:20px; line-height:1.6; }
+  .inlist { font-size:14px; color:var(--sub); margin-top:12px; line-height:1.8; }
+  .inlist b { color:var(--in); }
+  .foot { display:flex; gap:10px; margin-top:16px; }
+  button { font:inherit; border:none; border-radius:10px; padding:12px 16px; background:#e8eaf6; color:var(--ink); cursor:pointer; }
+  button.p { background:var(--ink); color:#fff; }
+  button.big { width:100%; font-size:20px; font-weight:700; padding:16px; }
+  .ov { position:fixed; inset:0; background:rgba(20,24,33,.6); display:none; align-items:center; justify-content:center; padding:16px; z-index:10; }
+  .ov.on { display:flex; }
+  .box { background:var(--card); border-radius:16px; width:100%; max-width:420px; padding:22px; }
+  .who { font-size:24px; font-weight:800; text-align:center; }
+  .hint { text-align:center; color:var(--sub); font-size:15px; margin-top:6px; }
+  .msg { min-height:22px; text-align:center; color:var(--warn); margin:8px 0; font-size:15px; }
+  .dots { display:flex; justify-content:center; gap:14px; margin:14px 0; }
+  .dots i { width:18px; height:18px; border-radius:50%; border:2px solid var(--ink); display:block; }
+  .dots i.f { background:var(--ink); }
+  .pad { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .pad button { font-size:28px; padding:16px 0; background:#f0f1f4; }
+  .res { text-align:center; }
+  .res .k { font-size:48px; font-weight:800; margin:6px 0; }
+  .res .k.in { color:var(--in); } .res .k.out { color:var(--out); }
+  .res .tm { font-size:64px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .res .ex { color:var(--sub); margin-top:6px; }
+  .center { text-align:center; padding:40px 16px; }
+  .warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<header><span class="t">ACLASS 打刻</span><span class="dev" id="dev"></span><span class="clock" id="clock">--:--</span></header>
+<main id="main"><div class="center">読み込み中…</div></main>
+<div class="ov" id="ov"><div class="box" id="box"></div></div>
+
+<script>
+var IDLE_MS = 5 * 60 * 1000;  // 5分読まなければカメラを止める（画面をクリックで再開）
+var CFG = loadCfg();
+var S = { staff: [], busy: false };
+var CAM = { stream: null, video: null, timer: null, idleAt: 0, lastCode: '', lastAt: 0 };
+var PAD = null;
+
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+
+function tick() { var d = new Date(); $('clock').textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); }
+setInterval(tick, 1000); tick();
+
+/* 端末キー(d)とGASのURL(g)：URLに付いていればこのPCに保存。なければ保存したものを使う */
+function loadCfg() {
+  var q = new URLSearchParams(location.search), c = {};
+  try { c = JSON.parse(localStorage.getItem('aclass_dakoku') || '{}'); } catch (e) { c = {}; }
+  var d = (q.get('d') || '').replace(/[^A-Za-z0-9]/g, ''), g = q.get('g') || '';
+  if (d && /^https:\/\/script\.google\.com\/.+\/exec$/.test(g)) {
+    c = { d: d, g: g };
+    try { localStorage.setItem('aclass_dakoku', JSON.stringify(c)); } catch (e) {}
+    history.replaceState(null, '', location.pathname); // アドレスバーからキーを消す
+  }
+  return c;
+}
+
+/* GASを呼ぶ（text/plain で送ると、ブラウザの事前確認なしで届く） */
+function api(fn, args) {
+  var ctl = new AbortController();
+  var t = setTimeout(function () { ctl.abort(); }, 25000);
+  return fetch(CFG.g, { method: 'POST', body: JSON.stringify({ fn: fn, args: args }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, signal: ctl.signal })
+    .then(function (r) { return r.json(); })
+    .catch(function (e) { return { ok: false, net: true, msg: '通信できませんでした（' + (e.name === 'AbortError' ? '時間切れ' : e.message) + '）' }; })
+    .finally(function () { clearTimeout(t); });
+}
+
+function openOv(h) { $('box').innerHTML = h; $('ov').classList.add('on'); }
+function closeOv() { $('ov').classList.remove('on'); $('box').innerHTML = ''; PAD = null; }
+function msgBox(t, m, after) {
+  openOv('<div class="who">' + esc(t) + '</div><div class="hint" style="margin:12px 0;font-size:17px">' + esc(m) + '</div>');
+  setTimeout(function () { closeOv(); if (after) after(); }, 3500);
+}
+
+/* ========== 画面 ========== */
+
+function boot() {
+  if (!CFG.d || !CFG.g) {
+    $('main').innerHTML = '<div class="center"><div style="font-size:20px;font-weight:700">このPCは打刻用に設定されていません</div>'
+      + '<div class="hint" style="margin-top:10px">打刻アプリの管理画面で「この端末を登録」を押し、<br>「PCカメラ用のページを開く」から開いてください</div></div>';
+    return;
+  }
+  load();
+}
+
+function load() {
+  api('init', [CFG.d]).then(function (r) {
+    if (!r.ok) {
+      if (r.reason === 'unregistered') {
+        stopCam();
+        $('main').innerHTML = '<div class="center"><div style="font-size:20px;font-weight:700">この端末は登録されていません（取り消し済み）</div>'
+          + '<div class="hint" style="margin-top:10px">管理画面でもう一度「この端末を登録」をしてください</div></div>';
+        return;
+      }
+      if (!$('camBox')) $('main').innerHTML = '<div class="center warn">' + esc(r.msg || '読み込みに失敗しました') + '</div><div class="foot"><button class="big" onclick="location.reload()">もう一度</button></div>';
+      return;
+    }
+    S.staff = r.staff;
+    $('dev').textContent = r.store + '・' + r.device;
+    render();
+  });
+}
+
+function render() {
+  if (!$('camBox')) {
+    $('main').innerHTML = '<div class="cam off" id="camBox" onclick="startCam()">' + offHtml() + '</div>'
+      + '<div class="inlist" id="inlist"></div>'
+      + '<div class="foot"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button></div>';
+    startCam();
+  }
+  var ins = S.staff.filter(function (s) { return s.state === 'in'; });
+  $('inlist').innerHTML = ins.length
+    ? '<b>出勤中（' + ins.length + '人）</b>　' + ins.map(function (s) { return esc(s.name) + ' ' + esc(s.since) + '〜'; }).join('　')
+    : '出勤中の人はいません';
+}
+function offHtml() { return '<div class="start">📷 クリックしてカメラを起動<br><span style="font-size:15px;font-weight:400">QRカードをカメラにかざす → 自分の番号を入力</span></div>'; }
+
+function openAdmin() { window.open(CFG.g + '?d=' + encodeURIComponent(CFG.d), '_blank'); }
+
+/* ========== カメラ ========== */
+
+function startCam() {
+  if (CAM.stream) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return msgBox('カメラ', 'このブラウザではカメラを使えません（Chromeで開いてください）');
+  navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+    .then(function (st) {
+      CAM.stream = st;
+      var box = $('camBox');
+      box.className = 'cam'; box.onclick = null;
+      box.innerHTML = '<video id="vid" playsinline muted autoplay></video><div class="frame"></div><div class="guide" id="guide">QRカードをカメラにかざしてください</div>';
+      CAM.video = $('vid');
+      CAM.video.srcObject = st;
+      CAM.idleAt = Date.now();
+      CAM.timer = setInterval(scan, 200);
+    })
+    .catch(function (e) {
+      var why = e && e.name === 'NotAllowedError' ? 'カメラが許可されていません。アドレスバー左のアイコン →「カメラ」を「許可」にして、更新してください'
+              : e && e.name === 'NotFoundError' ? 'カメラが見つかりません。PCにカメラがあるか確認してください'
+              : e && e.name === 'NotReadableError' ? '別のアプリ（Zoom・Teams など）がカメラを使っています。閉じてから更新してください'
+              : 'カメラを起動できませんでした（' + (e && e.name || e) + '）';
+      openOv('<div class="who">カメラ</div><div class="hint" style="margin:12px 0;font-size:16px">' + esc(why) + '</div><button class="big p" onclick="closeOv()">閉じる</button>');
+    });
+}
+
+function stopCam() {
+  if (CAM.timer) clearInterval(CAM.timer);
+  CAM.timer = null;
+  if (CAM.stream) CAM.stream.getTracks().forEach(function (t) { t.stop(); });
+  CAM.stream = null; CAM.video = null;
+  var box = $('camBox');
+  if (box) { box.className = 'cam off'; box.onclick = startCam; box.innerHTML = offHtml(); }
+}
+
+function guide(t) { var g = $('guide'); if (g) g.textContent = t; }
+
+var cv = document.createElement('canvas');
+function scan() {
+  var v = CAM.video;
+  if (!v || v.readyState < 2 || S.busy) return;
+  if (Date.now() - CAM.idleAt > IDLE_MS) { stopCam(); return; }
+  var w = 800, h = Math.round(v.videoHeight * w / v.videoWidth);
+  cv.width = w; cv.height = h;
+  var cx = cv.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(v, 0, 0, w, h);
+  var q = jsQR(cx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+  if (!q || !q.data) return;
+  var code = normCode(q.data);
+  if (code === CAM.lastCode && Date.now() - CAM.lastAt < 10000) return; // 同じカードを続けて読まない
+  CAM.lastCode = code; CAM.lastAt = Date.now(); CAM.idleAt = Date.now();
+  if (code.indexOf('ACLASS-T:') !== 0) { guide('ACLASSの打刻カードではありません'); setTimeout(function () { guide('QRカードをカメラにかざしてください'); }, 2500); return; }
+  S.busy = true;
+  guide('確認しています…');
+  api('scanQr', [CFG.d, code]).then(function (r) {
+    if (!r.ok) return msgBox(r.dup ? '打刻済み' : '打刻できません', r.msg, ready);
+    askPin(r);
+  });
+}
+
+function normCode(v) {
+  return String(v).trim().replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/：/g, ':').toUpperCase();
+}
+
+function ready() { S.busy = false; CAM.idleAt = Date.now(); guide('QRカードをカメラにかざしてください'); }
+
+/* ========== 番号 ========== */
+
+function pinPad(opt) {
+  PAD = { v: '', opt: opt };
+  var h = '<div class="who">' + esc(opt.title) + '</div><div class="hint">' + esc(opt.hint || '自分の番号（4桁）') + '</div>'
+    + '<div class="dots" id="dots"><i></i><i></i><i></i><i></i></div><div class="msg" id="pmsg">' + esc(opt.msg || '') + '</div><div class="pad">';
+  [1,2,3,4,5,6,7,8,9].forEach(function (n) { h += '<button onclick="padKey(' + n + ')">' + n + '</button>'; });
+  h += '<button onclick="padCancel()" style="font-size:16px">やめる</button><button onclick="padKey(0)">0</button><button onclick="padDel()" style="font-size:16px">消す</button></div>';
+  openOv(h);
+}
+function padDraw() { var d = $('dots'); if (!d) return; [].forEach.call(d.children, function (el, i) { el.className = i < PAD.v.length ? 'f' : ''; }); }
+function padDel() { if (PAD) { PAD.v = PAD.v.slice(0, -1); padDraw(); } }
+function padCancel() { var c = PAD && PAD.opt.cancel; closeOv(); if (c) c(); }
+function padKey(n) {
+  if (!PAD || PAD.busy || PAD.v.length >= 4) return;
+  PAD.v += String(n); padDraw();
+  if (PAD.v.length === 4) { PAD.busy = true; $('pmsg').textContent = '確認中…'; var v = PAD.v, f = PAD.opt.done; setTimeout(function () { f(v); }, 120); }
+}
+document.addEventListener('keydown', function (e) {
+  if (!PAD || !$('dots')) { if (!CAM.stream && $('camBox')) startCam(); return; }
+  if (/^[0-9]$/.test(e.key)) { e.preventDefault(); padKey(Number(e.key)); }
+  else if (/^Numpad[0-9]$/.test(e.code)) { e.preventDefault(); padKey(Number(e.code.slice(6))); }
+  else if (e.key === 'Backspace') { e.preventDefault(); padDel(); }
+  else if (e.key === 'Escape') { e.preventDefault(); padCancel(); }
+});
+
+function askPin(r, msg) {
+  if (!r.hasPin) return msgBox(r.name + ' さん', '番号がまだありません。責任者に仮番号をもらってください', ready);
+  pinPad({ title: r.name + '　' + r.kind, msg: msg, cancel: ready, done: function (pin) { sendPin(r, pin, null); } });
+}
+
+function askNewPin(name, msg, cb) {
+  pinPad({ title: name, hint: '自分の番号を決めてください（4桁）', msg: msg || '初回だけ、仮番号から変えます', cancel: ready, done: function (a) {
+    pinPad({ title: name, hint: 'もう一度同じ番号を', cancel: ready, done: function (b) {
+      if (a !== b) return askNewPin(name, '2回の番号が一致しません', cb);
+      cb(a);
+    } });
+  } });
+}
+
+function sendPin(r, pin, newPin) {
+  api('punchPin', [CFG.d, r.ticket, pin, newPin]).then(function (x) {
+    if (x.ok) return showResult(x);
+    if (x.needNew) return askNewPin(r.name, x.msg, function (np) { sendPin(r, pin, np); });
+    if (x.expired || x.net) return msgBox('打刻できません', x.msg, ready);
+    askPin(r, x.msg || 'できませんでした'); // 番号ちがい：2分以内なら打ち直せる
+  });
+}
+
+function showResult(r) {
+  var c = r.kind === '退勤' ? 'out' : 'in';
+  openOv('<div class="res"><div class="who">' + esc(r.name) + ' さん</div><div class="k ' + c + '">' + esc(r.kind) + '</div>'
+    + '<div class="tm">' + esc(r.time) + '</div>' + (r.extra ? '<div class="ex">' + esc(r.extra) + '</div>' : '')
+    + '<div class="ex">' + (r.kind === '出勤' ? 'おつかれさまです。着替えたら業務へ' : 'おつかれさまでした') + '</div></div>');
+  setTimeout(function () { closeOv(); ready(); load(); }, 4000);
+}
+
+/* 1分ごとに出勤中の一覧を更新／30分ごとに読み込み直す（打刻中は避ける） */
+setInterval(function () { if (!S.busy && CFG.d) load(); }, 60000);
+setInterval(function () { if (!S.busy) location.reload(); }, 30 * 60 * 1000);
+
+boot();
+</script>
+</body>
+</html>
