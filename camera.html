@@ -24,7 +24,9 @@
   main { padding:16px; max-width:760px; margin:0 auto; }
   .cam { position:relative; background:#000; border-radius:16px; overflow:hidden; aspect-ratio:4/3; }
   .cam video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); display:block; }
-  .cam .frame { position:absolute; left:32%; top:22%; width:36%; aspect-ratio:1; border:4px dashed rgba(255,255,255,.8); border-radius:14px; }
+  .cam .flash { position:absolute; inset:0; border:10px solid #34d399; border-radius:16px; opacity:0; transition:opacity .15s; pointer-events:none; }
+  .cam .flash.on { opacity:1; }
+  .tips { font-size:14px; color:var(--sub); margin-top:8px; line-height:1.7; }
   .cam .guide { position:absolute; left:0; right:0; bottom:0; padding:16px; color:#fff; font-size:22px; font-weight:800; text-align:center; background:linear-gradient(transparent, rgba(0,0,0,.75)); }
   .cam.off { display:flex; align-items:center; justify-content:center; cursor:pointer; }
   .cam.off .start { color:#fff; font-size:24px; font-weight:800; text-align:center; padding:20px; line-height:1.6; }
@@ -65,6 +67,7 @@ var CFG = loadCfg();
 var S = { staff: [], busy: false };
 var CAM = { stream: null, video: null, timer: null, idleAt: 0, lastCode: '', lastAt: 0 };
 var PAD = null;
+var GUIDE = 'QRカードをカメラに向けてください（画面のどこに映ってもOK）';
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
@@ -134,6 +137,7 @@ function load() {
 function render() {
   if (!$('camBox')) {
     $('main').innerHTML = '<div class="cam off" id="camBox" onclick="startCam()">' + offHtml() + '</div>'
+      + '<div class="tips">コツ：カメラから20〜30cmくらいで、QRを1〜2秒止める。スマホの画面なら明るさを上げる</div>'
       + '<div class="inlist" id="inlist"></div>'
       + '<div class="foot"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button></div>';
     startCam();
@@ -157,7 +161,7 @@ function startCam() {
       CAM.stream = st;
       var box = $('camBox');
       box.className = 'cam'; box.onclick = null;
-      box.innerHTML = '<video id="vid" playsinline muted autoplay></video><div class="frame"></div><div class="guide" id="guide">QRカードをカメラにかざしてください</div>';
+      box.innerHTML = '<video id="vid" playsinline muted autoplay></video><div class="flash" id="flash"></div><div class="guide" id="guide">' + GUIDE + '</div>';
       CAM.video = $('vid');
       CAM.video.srcObject = st;
       CAM.idleAt = Date.now();
@@ -184,33 +188,57 @@ function stopCam() {
 function guide(t) { var g = $('guide'); if (g) g.textContent = t; }
 
 var cv = document.createElement('canvas');
-function scan() {
-  var v = CAM.video;
-  if (!v || v.readyState < 2 || S.busy) return;
-  if (Date.now() - CAM.idleAt > IDLE_MS) { stopCam(); return; }
-  var w = 800, h = Math.round(v.videoHeight * w / v.videoWidth);
+var pass = 0;
+/* 読み取り：全体（最大1280px）と、中央を拡大したものを交互に読む。
+   全体＝近くでかざしたとき、中央拡大＝少し離れていて小さく映ったとき */
+function readFrame(v) {
+  var vw = v.videoWidth, vh = v.videoHeight, sx = 0, sy = 0, sw = vw, sh = vh;
+  pass = (pass + 1) % 2;
+  if (pass === 1) { sw = Math.round(vw * 0.55); sh = Math.round(vh * 0.55); sx = Math.round((vw - sw) / 2); sy = Math.round((vh - sh) / 2); }
+  var w = Math.min(1280, Math.max(sw, 900)), h = Math.round(sh * w / sw);
   cv.width = w; cv.height = h;
   var cx = cv.getContext('2d', { willReadFrequently: true });
-  cx.drawImage(v, 0, 0, w, h);
+  cx.imageSmoothingEnabled = false;
+  cx.drawImage(v, sx, sy, sw, sh, 0, 0, w, h);
   var q = jsQR(cx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
-  if (!q || !q.data) return;
-  var code = normCode(q.data);
+  return q && q.data ? q.data : '';
+}
+
+function scan() {
+  var v = CAM.video;
+  if (!v || v.readyState < 2 || !v.videoWidth || S.busy) return;
+  if (Date.now() - CAM.idleAt > IDLE_MS) { stopCam(); return; }
+  var raw = readFrame(v);
+  if (!raw) return;
+  var code = normCode(raw);
   if (code === CAM.lastCode && Date.now() - CAM.lastAt < 10000) return; // 同じカードを続けて読まない
   CAM.lastCode = code; CAM.lastAt = Date.now(); CAM.idleAt = Date.now();
-  if (code.indexOf('ACLASS-T:') !== 0) { guide('ACLASSの打刻カードではありません'); setTimeout(function () { guide('QRカードをカメラにかざしてください'); }, 2500); return; }
+  flash();
+  if (code.indexOf('ACLASS-T:') !== 0) { guide('ACLASSの打刻カードではありません'); setTimeout(function () { guide(GUIDE); }, 2500); return; }
   S.busy = true;
-  guide('確認しています…');
+  guide('読み取りました。確認しています…');
   api('scanQr', [CFG.d, code]).then(function (r) {
-    if (!r.ok) return msgBox(r.dup ? '打刻済み' : '打刻できません', r.msg, ready);
+    if (!r.ok) return msgBox(r.dup ? '打刻済み' : '打刻できません', dupMsg(r), ready);
     askPin(r);
   });
+}
+
+function flash() { var f = $('flash'); if (!f) return; f.classList.add('on'); setTimeout(function () { f.classList.remove('on'); }, 600); }
+
+/* 2分以内の打刻：次に打刻できる時刻を案内 */
+function dupMsg(r) {
+  var m = String(r.msg || '').match(/（(出勤|退勤) (\d{1,2}):(\d{2})）/);
+  if (!r.dup || !m) return r.msg;
+  var t = Number(m[2]) * 60 + Number(m[3]) + 2, hh = Math.floor(t / 60) % 24, mm = t % 60;
+  var next = (m[1] === '出勤' ? '退勤' : '次の打刻') + 'は ' + hh + ':' + ('0' + mm).slice(-2) + ' から打刻できます';
+  return r.msg + '。' + next;
 }
 
 function normCode(v) {
   return String(v).trim().replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/：/g, ':').toUpperCase();
 }
 
-function ready() { S.busy = false; CAM.idleAt = Date.now(); guide('QRカードをカメラにかざしてください'); }
+function ready() { S.busy = false; CAM.idleAt = Date.now(); CAM.lastCode = ''; guide(GUIDE); }
 
 /* ========== 番号 ========== */
 
@@ -256,7 +284,7 @@ function sendPin(r, pin, newPin) {
   api('punchPin', [CFG.d, r.ticket, pin, newPin]).then(function (x) {
     if (x.ok) return showResult(x);
     if (x.needNew) return askNewPin(r.name, x.msg, function (np) { sendPin(r, pin, np); });
-    if (x.expired || x.net) return msgBox('打刻できません', x.msg, ready);
+    if (x.expired || x.net) return msgBox(x.dup ? '打刻済み' : '打刻できません', dupMsg(x), ready);
     askPin(r, x.msg || 'できませんでした'); // 番号ちがい：2分以内なら打ち直せる
   });
 }
