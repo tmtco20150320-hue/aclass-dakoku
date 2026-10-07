@@ -325,7 +325,8 @@ function normCode(v) {
   return String(v).trim().replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/：/g, ':').toUpperCase();
 }
 
-function ready() { S.busy = false; CAM.idleAt = Date.now(); CAM.lastCode = ''; guide(GUIDE); }
+/* keep=true（打刻できた直後）：同じカードを10秒間は読み直さない（かざしたままでも「打刻済み」が出ない） */
+function ready(keep) { S.busy = false; CAM.idleAt = Date.now(); if (keep) CAM.lastAt = Date.now(); else CAM.lastCode = ''; guide(GUIDE); }
 
 /* ========== 番号 ========== */
 
@@ -381,7 +382,7 @@ function showResult(r) {
   openOv('<div class="res"><div class="who">' + esc(r.name) + ' さん</div><div class="k ' + c + '">' + esc(r.kind) + '</div>'
     + '<div class="tm">' + esc(r.time) + '</div>' + (r.extra ? '<div class="ex">' + esc(r.extra) + '</div>' : '')
     + '<div class="ex">' + (r.kind === '出勤' ? 'おつかれさまです。着替えたら業務へ' : 'おつかれさまでした') + '</div></div>');
-  setTimeout(function () { closeOv(); ready(); load(); }, 4000);
+  setTimeout(function () { closeOv(); ready(true); load(); }, 4000);
 }
 
 /* 1分ごとに出勤中の一覧を更新／30分ごとに読み込み直す（打刻中は避ける） */
