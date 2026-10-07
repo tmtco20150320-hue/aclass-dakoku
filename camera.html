@@ -163,7 +163,8 @@ function render() {
       + '<div class="tips">コツ：カメラから20〜30cmくらいで、QRを1〜2秒止める。スマホの画面なら明るさを上げる</div></div>'
       + '<div class="side"><h3 id="sideTitle">今日の出勤者</h3><div class="sub" id="sideSub"></div><div id="todayList"></div>'
       + '<div class="sbtn"><button class="big p" onclick="endOfDay()">業務終了（Excel用に出す）</button>'
-      + '<div class="row2"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button></div></div></div>'
+      + '<div class="row2"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button><button onclick="switchCam()">カメラ切替</button></div>'
+      + '<div class="sub" id="camName" style="margin-top:8px"></div></div></div>'
       + '</div>';
     startCam();
   }
@@ -248,9 +249,19 @@ function openAdmin() { window.open(CFG.g + '?d=' + encodeURIComponent(CFG.d), '_
 function startCam() {
   if (CAM.stream) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return msgBox('カメラ', 'このブラウザではカメラを使えません（Chromeで開いてください）');
-  navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+  var saved = '';
+  try { saved = localStorage.getItem('aclass_cam') || ''; } catch (e) {}
+  var v = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  if (saved) v.deviceId = { exact: saved }; else v.facingMode = 'user'; // 選んだカメラがなければ画面側（前面）を頼む
+  navigator.mediaDevices.getUserMedia({ video: v, audio: false })
+    .catch(function (e) { // 覚えていたカメラが無くなった等 → 何も指定せずにもう一度
+      if (saved) { try { localStorage.removeItem('aclass_cam'); } catch (x) {} return navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }); }
+      throw e;
+    })
     .then(function (st) {
       CAM.stream = st;
+      showCamName();
+      if (!saved) preferFront(); // 初回：背面が選ばれていたら前面に切り替える
       var box = $('camBox');
       box.className = 'cam'; box.onclick = null;
       box.innerHTML = '<video id="vid" playsinline muted autoplay></video><div class="flash" id="flash"></div><div class="guide" id="guide">' + GUIDE + '</div>';
@@ -266,6 +277,35 @@ function startCam() {
               : 'カメラを起動できませんでした（' + (e && e.name || e) + '）';
       openOv('<div class="who">カメラ</div><div class="hint" style="margin:12px 0;font-size:16px">' + esc(why) + '</div><button class="big p" onclick="closeOv()">閉じる</button>');
     });
+}
+
+/* ---- カメラの選択（MateBook E など前面・背面がある端末用） ---- */
+function camLabel() { var t = CAM.stream && CAM.stream.getVideoTracks()[0]; return t ? (t.label || '') : ''; }
+function showCamName() { var el = $('camName'); if (el) el.textContent = camLabel() ? '使用中のカメラ：' + camLabel() : ''; }
+function listCams() {
+  return navigator.mediaDevices.enumerateDevices().then(function (ds) { return ds.filter(function (d) { return d.kind === 'videoinput'; }); });
+}
+var FRONT = /front|user|前面|フロント|内側|integrated/i, REAR = /rear|back|environment|背面|リア|外側/i;
+function preferFront() {
+  if (!REAR.test(camLabel())) return; // すでに前面（または判別できない）ならそのまま
+  listCams().then(function (cs) {
+    var f = cs.filter(function (c) { return FRONT.test(c.label) && !REAR.test(c.label); })[0];
+    if (f) useCam(f.deviceId);
+  });
+}
+function useCam(id) {
+  try { localStorage.setItem('aclass_cam', id); } catch (e) {}
+  stopCam(); startCam();
+}
+/* 「カメラ切替」：次のカメラへ。選んだカメラはこの端末が覚える */
+function switchCam() {
+  listCams().then(function (cs) {
+    if (cs.length < 2) return msgBox('カメラ', 'この端末のカメラは1つだけです');
+    var cur = CAM.stream && CAM.stream.getVideoTracks()[0];
+    var curId = cur && cur.getSettings ? cur.getSettings().deviceId : '';
+    var i = cs.findIndex(function (c) { return c.deviceId === curId; });
+    useCam(cs[(i + 1) % cs.length].deviceId);
+  });
 }
 
 function stopCam() {
