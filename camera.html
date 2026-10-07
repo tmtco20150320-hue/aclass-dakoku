@@ -21,7 +21,27 @@
   header .t { font-size:20px; font-weight:700; }
   header .dev { font-size:12px; opacity:.7; }
   header .clock { font-size:28px; font-weight:700; margin-left:auto; font-variant-numeric:tabular-nums; }
-  main { padding:16px; max-width:760px; margin:0 auto; }
+  main { padding:16px; }
+  .layout { display:grid; grid-template-columns:minmax(0, 3fr) minmax(300px, 2fr); gap:20px; align-items:start; }
+  @media (max-width: 900px) { .layout { grid-template-columns:1fr; } }
+  .side { background:var(--card); border-radius:16px; padding:16px; }
+  .side h3 { margin:0 0 4px; font-size:18px; }
+  .side .sub { font-size:13px; color:var(--sub); margin-bottom:10px; }
+  .tl { width:100%; border-collapse:collapse; font-size:16px; }
+  .tl th { text-align:left; font-size:12px; color:var(--sub); font-weight:600; padding:4px 6px; border-bottom:1px solid var(--line); }
+  .tl td { padding:8px 6px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  .tl tr.in td:first-child { border-left:4px solid var(--in); }
+  .tl tr.done td { color:var(--sub); }
+  .tl .tag { font-size:11px; padding:2px 6px; border-radius:6px; background:#e9f7ef; color:var(--in); }
+  .tl .tag.w { background:#fdecea; color:var(--warn); }
+  .empty { color:var(--sub); font-size:14px; padding:12px 0; }
+  .sbtn { display:flex; flex-direction:column; gap:10px; margin-top:16px; }
+  .sbtn .row2 { display:flex; gap:10px; } .sbtn .row2 button { flex:1; }
+  .box.wide { max-width:720px; }
+  .xl { width:100%; border-collapse:collapse; font-size:15px; margin:10px 0; font-variant-numeric:tabular-nums; }
+  .xl th, .xl td { border:1px solid var(--line); padding:6px 8px; text-align:left; }
+  .xl th { background:#f0f1f4; font-size:12px; }
+  .wlist { background:#fdecea; color:var(--warn); border-radius:10px; padding:10px 12px; font-size:14px; margin-top:10px; line-height:1.7; }
   .cam { position:relative; background:#000; border-radius:16px; overflow:hidden; aspect-ratio:4/3; }
   .cam video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); display:block; }
   .cam .flash { position:absolute; inset:0; border:10px solid #34d399; border-radius:16px; opacity:0; transition:opacity .15s; pointer-events:none; }
@@ -38,7 +58,7 @@
   button.big { width:100%; font-size:20px; font-weight:700; padding:16px; }
   .ov { position:fixed; inset:0; background:rgba(20,24,33,.6); display:none; align-items:center; justify-content:center; padding:16px; z-index:10; }
   .ov.on { display:flex; }
-  .box { background:var(--card); border-radius:16px; width:100%; max-width:420px; padding:22px; }
+  .box { background:var(--card); border-radius:16px; width:100%; max-width:420px; padding:22px; max-height:92vh; overflow:auto; }
   .who { font-size:24px; font-weight:800; text-align:center; }
   .hint { text-align:center; color:var(--sub); font-size:15px; margin-top:6px; }
   .msg { min-height:22px; text-align:center; color:var(--warn); margin:8px 0; font-size:15px; }
@@ -99,7 +119,7 @@ function api(fn, args) {
 }
 
 function openOv(h) { $('box').innerHTML = h; $('ov').classList.add('on'); }
-function closeOv() { $('ov').classList.remove('on'); $('box').innerHTML = ''; PAD = null; }
+function closeOv() { $('ov').classList.remove('on'); $('box').innerHTML = ''; $('box').classList.remove('wide'); PAD = null; }
 function msgBox(t, m, after) {
   openOv('<div class="who">' + esc(t) + '</div><div class="hint" style="margin:12px 0;font-size:17px">' + esc(m) + '</div>');
   setTimeout(function () { closeOv(); if (after) after(); }, 3500);
@@ -128,7 +148,7 @@ function load() {
       if (!$('camBox')) $('main').innerHTML = '<div class="center warn">' + esc(r.msg || '読み込みに失敗しました') + '</div><div class="foot"><button class="big" onclick="location.reload()">もう一度</button></div>';
       return;
     }
-    S.staff = r.staff;
+    S.staff = r.staff; S.today = r.today || []; S.wd = r.wd || '';
     $('dev').textContent = r.store + '・' + r.device;
     render();
   });
@@ -136,17 +156,84 @@ function load() {
 
 function render() {
   if (!$('camBox')) {
-    $('main').innerHTML = '<div class="cam off" id="camBox" onclick="startCam()">' + offHtml() + '</div>'
-      + '<div class="tips">コツ：カメラから20〜30cmくらいで、QRを1〜2秒止める。スマホの画面なら明るさを上げる</div>'
-      + '<div class="inlist" id="inlist"></div>'
-      + '<div class="foot"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button></div>';
+    $('main').innerHTML = '<div class="layout">'
+      + '<div><div class="cam off" id="camBox" onclick="startCam()">' + offHtml() + '</div>'
+      + '<div class="tips">コツ：カメラから20〜30cmくらいで、QRを1〜2秒止める。スマホの画面なら明るさを上げる</div></div>'
+      + '<div class="side"><h3 id="sideTitle">今日の出勤者</h3><div class="sub" id="sideSub"></div><div id="todayList"></div>'
+      + '<div class="sbtn"><button class="big p" onclick="endOfDay()">業務終了（Excel用に出す）</button>'
+      + '<div class="row2"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button></div></div></div>'
+      + '</div>';
     startCam();
   }
-  var ins = S.staff.filter(function (s) { return s.state === 'in'; });
-  $('inlist').innerHTML = ins.length
-    ? '<b>出勤中（' + ins.length + '人）</b>　' + ins.map(function (s) { return esc(s.name) + ' ' + esc(s.since) + '〜'; }).join('　')
-    : '出勤中の人はいません';
+  renderToday();
 }
+
+/* 右側：その営業日の出勤者（出勤中を上に） */
+function renderToday() {
+  var rows = (S.today || []).slice();
+  var isWork = function (r) { return /勤務中/.test(r.st || ''); };
+  var ins = rows.filter(isWork).length;
+  $('sideTitle').textContent = (S.wd ? S.wd + ' ' : '') + '今日の出勤者';
+  $('sideSub').textContent = '出勤中 ' + ins + '人 ／ 退勤済み ' + rows.filter(function (r) { return r.outS; }).length + '人';
+  if (!rows.length) { $('todayList').innerHTML = '<div class="empty">まだ誰も出勤していません</div>'; return; }
+  rows.sort(function (a, b) { return (isWork(a) ? 0 : 1) - (isWork(b) ? 0 : 1); });
+  var h = '<table class="tl"><tr><th>氏名</th><th>出勤</th><th>退勤</th><th></th></tr>';
+  rows.forEach(function (r) {
+    var working = isWork(r);
+    var tag = working ? '<span class="tag">勤務中</span>' : (/なし|不一致/.test(r.st) ? '<span class="tag w">' + esc(r.st) + '</span>' : '');
+    h += '<tr class="' + (working ? 'in' : 'done') + '"><td>' + esc(r.name) + '<div style="font-size:11px;color:var(--sub)">' + esc(r.kubun) + '</div></td>'
+      + '<td>' + esc(r.inS || '—') + '</td><td>' + esc(r.outS || '') + '</td><td>' + tag + '</td></tr>';
+  });
+  $('todayList').innerHTML = h + '</table>';
+}
+
+/* ========== 業務終了：Excelの勤怠テーブルに貼る行を出す ========== */
+var XL = { pin: '', text: '' };
+function endOfDay() {
+  S.busy = true;
+  pinPad({ title: '業務終了', hint: '管理用暗証番号（4桁）', cancel: ready, done: function (pin) { XL.pin = pin; fetchExport(0); } });
+}
+function fetchExport(back) {
+  openOv('<div class="who">集計しています…</div>');
+  api('dayExport', [CFG.d, XL.pin, back]).then(function (r) {
+    if (!r.ok) {
+      if (/暗証番号がちがいます/.test(r.msg || '')) return pinPad({ title: '業務終了', hint: '管理用暗証番号（4桁）', msg: r.msg, cancel: ready, done: function (pin) { XL.pin = pin; fetchExport(back); } });
+      return msgBox('業務終了', r.msg, function () { XL.pin = ''; ready(); });
+    }
+    showExport(r, back);
+  });
+}
+function showExport(r, back) {
+  XL.text = r.rows.map(function (x) { return x.join('\t'); }).join('\r\n');
+  var h = '<div class="who">' + esc(r.label) + ' の勤怠</div>';
+  if (!r.rows.length) {
+    h += '<div class="hint" style="margin:14px 0">この日の打刻はありません</div>';
+  } else {
+    h += '<div class="hint">「コピー」を押して、Excelの勤怠テーブルの一番下の<b>「年」のセル</b>を選んで貼り付け（Ctrl+V）</div>'
+      + '<table class="xl"><tr><th>年</th><th>月</th><th>日</th><th>氏名</th><th>出勤</th><th>退勤</th></tr>';
+    r.rows.forEach(function (x) { h += '<tr>' + x.map(function (v) { return '<td>' + esc(v) + '</td>'; }).join('') + '</tr>'; });
+    h += '</table>';
+    if (r.warn.length) h += '<div class="wlist">⚠ 確認してください<br>' + r.warn.map(esc).join('<br>') + '<br>（直すときは修正ログに1行足してから、もう一度「業務終了」）</div>';
+    h += '<div style="height:12px"></div><button class="big p" id="cpBtn" onclick="copyXL()">コピー</button>';
+  }
+  h += '<div class="sbtn"><div class="row2"><button onclick="fetchExport(' + (back ? 0 : 1) + ')">' + (back ? '今日の営業日に戻す' : '前の営業日を出す') + '</button>'
+    + '<button onclick="closeExport()">閉じる</button></div></div>';
+  openOv(h);
+  $('box').classList.add('wide');
+}
+function copyXL() {
+  var done = function () { var b = $('cpBtn'); if (b) { b.textContent = '✓ コピーしました（Excelに貼り付けてください）'; b.style.background = 'var(--in)'; } };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(XL.text).then(done, fallbackCopy);
+  } else fallbackCopy();
+  function fallbackCopy() {
+    var t = document.createElement('textarea'); t.value = XL.text; document.body.appendChild(t); t.select();
+    try { document.execCommand('copy'); done(); } catch (e) { alert('コピーできませんでした'); }
+    document.body.removeChild(t);
+  }
+}
+function closeExport() { $('box').classList.remove('wide'); XL.pin = ''; XL.text = ''; closeOv(); ready(); load(); }
+
 function offHtml() { return '<div class="start">📷 クリックしてカメラを起動<br><span style="font-size:15px;font-weight:400">QRカードをカメラにかざす → 自分の番号を入力</span></div>'; }
 
 function openAdmin() { window.open(CFG.g + '?d=' + encodeURIComponent(CFG.d), '_blank'); }
