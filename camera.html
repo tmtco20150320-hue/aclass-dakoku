@@ -213,7 +213,7 @@ function showExport(r, back) {
       + '<table class="xl"><tr><th>年</th><th>月</th><th>日</th><th>氏名</th><th>勤怠区分</th><th>出勤</th><th>退勤</th></tr>';
     r.rows.forEach(function (x) { h += '<tr>' + x.map(function (v) { return '<td>' + esc(v) + '</td>'; }).join('') + '</tr>'; });
     h += '</table>';
-    if (r.warn.length) h += '<div class="wlist">⚠ 確認してください<br>' + r.warn.map(esc).join('<br>') + '<br>（直すときは修正ログに1行足してから、もう一度「業務終了」）</div>';
+    if (r.warn.length) h += '<div class="wlist">⚠ 確認してください<br>' + r.warn.map(esc).join('<br>') + '<br>（このままコピーして貼り、Excelで時刻を入れてください。備考に「退勤押し忘れ・本人申告」などと書いておく）</div>';
     h += '<div style="height:12px"></div><button class="big p" id="cpBtn" onclick="copyXL()">コピー</button>';
   }
   h += '<div class="sbtn"><div class="row2"><button onclick="fetchExport(' + (back ? 0 : 1) + ')">' + (back ? '今日の営業日に戻す' : '前の営業日を出す') + '</button>'
@@ -370,7 +370,7 @@ function askNewPin(name, msg, cb) {
 
 function sendPin(r, pin, newPin) {
   api('punchPin', [CFG.d, r.ticket, pin, newPin]).then(function (x) {
-    if (x.ok) return showResult(x);
+    if (x.ok) { if (x.today) { S.today = x.today; renderToday(); } return showResult(x); } // 右の一覧はその場で更新
     if (x.needNew) return askNewPin(r.name, x.msg, function (np) { sendPin(r, pin, np); });
     if (x.expired || x.net) return msgBox(x.dup ? '打刻済み' : '打刻できません', dupMsg(x), ready);
     askPin(r, x.msg || 'できませんでした'); // 番号ちがい：2分以内なら打ち直せる
