@@ -210,7 +210,7 @@ function showExport(r, back) {
     h += '<div class="hint" style="margin:14px 0">この日の打刻はありません</div>';
   } else {
     h += '<div class="hint">「コピー」を押して、Excelの勤怠テーブルの一番下の<b>「年」のセル</b>を選んで貼り付け（Ctrl+V）</div>'
-      + '<table class="xl"><tr><th>年</th><th>月</th><th>日</th><th>氏名</th><th>出勤</th><th>退勤</th></tr>';
+      + '<table class="xl"><tr><th>年</th><th>月</th><th>日</th><th>氏名</th><th>勤怠区分</th><th>出勤</th><th>退勤</th></tr>';
     r.rows.forEach(function (x) { h += '<tr>' + x.map(function (v) { return '<td>' + esc(v) + '</td>'; }).join('') + '</tr>'; });
     h += '</table>';
     if (r.warn.length) h += '<div class="wlist">⚠ 確認してください<br>' + r.warn.map(esc).join('<br>') + '<br>（直すときは修正ログに1行足してから、もう一度「業務終了」）</div>';
