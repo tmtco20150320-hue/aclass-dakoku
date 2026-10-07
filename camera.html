@@ -34,6 +34,8 @@
   .tl tr.done td { color:var(--sub); }
   .tl .tag { font-size:11px; padding:2px 6px; border-radius:6px; background:#e9f7ef; color:var(--in); }
   .tl .tag.w { background:#fdecea; color:var(--warn); }
+  .tl .tag.d { background:#f0f1f4; color:var(--sub); }
+  .tl .tag { font-size:13px; padding:3px 8px; }
   .empty { color:var(--sub); font-size:14px; padding:12px 0; }
   .sbtn { display:flex; flex-direction:column; gap:10px; margin-top:16px; }
   .sbtn .row2 { display:flex; gap:10px; } .sbtn .row2 button { flex:1; }
@@ -168,21 +170,24 @@ function render() {
   renderToday();
 }
 
-/* 右側：その営業日の出勤者（出勤中を上に） */
+/* 右側：その営業日の出勤者。時刻は出さない（他人の勤務時間・遅刻が見えないように）。
+   名前と「勤務中／退勤済み」だけ。時刻や押し忘れの警告は業務終了の画面（暗証番号あり）で見る */
 function renderToday() {
-  var rows = (S.today || []).slice();
-  var isWork = function (r) { return /勤務中/.test(r.st || ''); };
-  var ins = rows.filter(isWork).length;
+  var by = {}, order = [];
+  (S.today || []).forEach(function (r) { // 同じ人の行が分かれていても1人1行にまとめる
+    if (!by[r.name]) { by[r.name] = { name: r.name, kubun: r.kubun, work: false }; order.push(r.name); }
+    if (/勤務中/.test(r.st || '')) by[r.name].work = true;
+  });
+  var people = order.map(function (n) { return by[n]; });
+  var ins = people.filter(function (p) { return p.work; }).length;
   $('sideTitle').textContent = (S.wd ? S.wd + ' ' : '') + '今日の出勤者';
-  $('sideSub').textContent = '出勤中 ' + ins + '人 ／ 退勤済み ' + rows.filter(function (r) { return r.outS; }).length + '人';
-  if (!rows.length) { $('todayList').innerHTML = '<div class="empty">まだ誰も出勤していません</div>'; return; }
-  rows.sort(function (a, b) { return (isWork(a) ? 0 : 1) - (isWork(b) ? 0 : 1); });
-  var h = '<table class="tl"><tr><th>氏名</th><th>出勤</th><th>退勤</th><th></th></tr>';
-  rows.forEach(function (r) {
-    var working = isWork(r);
-    var tag = working ? '<span class="tag">勤務中</span>' : (/なし|不一致/.test(r.st) ? '<span class="tag w">' + esc(r.st) + '</span>' : '');
-    h += '<tr class="' + (working ? 'in' : 'done') + '"><td>' + esc(r.name) + '<div style="font-size:11px;color:var(--sub)">' + esc(r.kubun) + '</div></td>'
-      + '<td>' + esc(r.inS || '—') + '</td><td>' + esc(r.outS || '') + '</td><td>' + tag + '</td></tr>';
+  $('sideSub').textContent = '勤務中 ' + ins + '人 ／ 退勤済み ' + (people.length - ins) + '人';
+  if (!people.length) { $('todayList').innerHTML = '<div class="empty">まだ誰も出勤していません</div>'; return; }
+  people.sort(function (a, b) { return (a.work ? 0 : 1) - (b.work ? 0 : 1); });
+  var h = '<table class="tl"><tr><th>氏名</th><th>状態</th></tr>';
+  people.forEach(function (p) {
+    h += '<tr class="' + (p.work ? 'in' : 'done') + '"><td>' + esc(p.name) + '<div style="font-size:11px;color:var(--sub)">' + esc(p.kubun) + '</div></td>'
+      + '<td>' + (p.work ? '<span class="tag">勤務中</span>' : '<span class="tag d">退勤済み</span>') + '</td></tr>';
   });
   $('todayList').innerHTML = h + '</table>';
 }
