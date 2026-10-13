@@ -57,6 +57,7 @@
   .foot { display:flex; gap:10px; margin-top:16px; }
   button { font:inherit; border:none; border-radius:10px; padding:12px 16px; background:#e8eaf6; color:var(--ink); cursor:pointer; }
   button.p { background:var(--ink); color:#fff; }
+  button:disabled { opacity:.35; cursor:default; }
   button.big { width:100%; font-size:20px; font-weight:700; padding:16px; }
   .ov { position:fixed; inset:0; background:rgba(20,24,33,.6); display:none; align-items:center; justify-content:center; padding:16px; z-index:10; }
   .ov.on { display:flex; }
@@ -194,7 +195,7 @@ function renderToday() {
 }
 
 /* ========== 業務終了：Excelの勤怠テーブルに貼る行を出す ========== */
-var XL = { pin: '', text: '' };
+var XL = { pin: '', text: '', wd: '' };
 function endOfDay() {
   S.busy = true;
   pinPad({ title: '業務終了', hint: '管理用暗証番号（4桁）', cancel: ready, done: function (pin) { XL.pin = pin; fetchExport(0); } });
@@ -211,7 +212,10 @@ function fetchExport(back) {
 }
 function showExport(r, back) {
   XL.text = r.rows.map(function (x) { return x.join('\t'); }).join('\r\n');
+  XL.wd = r.wd;
+  back = r.back || 0;
   var h = '<div class="who">' + esc(r.label) + ' の勤怠</div>';
+  if (r.exported) h += '<div class="wlist" style="margin-top:8px">⚠ この日は <b>' + esc(r.exported.at) + '</b> に一度コピーされています（' + esc(r.exported.dev || '') + '）。<br>Excelに<b>二重に貼らない</b>よう、勤怠データベースにこの日の行がないか確かめてから貼ってください</div>';
   if (!r.rows.length) {
     h += '<div class="hint" style="margin:14px 0">この日の打刻はありません</div>';
   } else {
@@ -222,13 +226,19 @@ function showExport(r, back) {
     if (r.warn.length) h += '<div class="wlist">⚠ 確認してください<br>' + r.warn.map(esc).join('<br>') + '<br>（このままコピーして貼り、Excelで時刻を入れてください。備考に「退勤押し忘れ・本人申告」などと書いておく）</div>';
     h += '<div style="height:12px"></div><button class="big p" id="cpBtn" onclick="copyXL()">コピー</button>';
   }
-  h += '<div class="sbtn"><div class="row2"><button onclick="fetchExport(' + (back ? 0 : 1) + ')">' + (back ? '今日の営業日に戻す' : '前の営業日を出す') + '</button>'
-    + '<button onclick="closeExport()">閉じる</button></div></div>';
+  h += '<div class="sbtn"><div class="row2">'
+    + '<button onclick="fetchExport(' + Math.min(14, back + 1) + ')"' + (back >= 14 ? ' disabled' : '') + '>◀ 前の日</button>'
+    + '<button onclick="fetchExport(' + Math.max(0, back - 1) + ')"' + (back <= 0 ? ' disabled' : '') + '>次の日 ▶</button>'
+    + '<button onclick="closeExport()">閉じる</button></div>'
+    + '<div class="sub" style="text-align:center;margin-top:6px">' + (back ? back + '日前の営業日（最大14日前まで）' : '今の営業日') + '</div></div>';
   openOv(h);
   $('box').classList.add('wide');
 }
 function copyXL() {
-  var done = function () { var b = $('cpBtn'); if (b) { b.textContent = '✓ コピーしました（Excelに貼り付けてください）'; b.style.background = 'var(--in)'; } };
+  var done = function () {
+    var b = $('cpBtn'); if (b) { b.textContent = '✓ コピーしました（Excelに貼り付けてください）'; b.style.background = 'var(--in)'; }
+    if (XL.wd && XL.pin) api('markExported', [CFG.d, XL.pin, XL.wd]); // 二重貼り付け防止の記録
+  };
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(XL.text).then(done, fallbackCopy);
   } else fallbackCopy();
@@ -431,7 +441,7 @@ function showResult(r) {
 }
 
 /* 1分ごとに出勤中の一覧を更新／30分ごとに読み込み直す（打刻中は避ける） */
-setInterval(function () { if (!S.busy && CFG.d) load(); }, 60000);
+setInterval(function () { if (!S.busy && CFG.d && !document.hidden) load(); }, 60000); // 画面が隠れているときは問い合わせない
 setInterval(function () { if (!S.busy) location.reload(); }, 30 * 60 * 1000);
 
 boot();
