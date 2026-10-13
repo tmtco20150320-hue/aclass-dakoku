@@ -77,6 +77,13 @@
   .res .ex { color:var(--sub); margin-top:6px; }
   .center { text-align:center; padding:40px 16px; }
   .warn { color:var(--warn); }
+  /* 番号登録モード（v15） */
+  .cam.reg { box-shadow:0 0 0 6px #f2a600; }
+  .cam .regbar { position:absolute; left:0; right:0; top:0; padding:12px 14px; background:#f2a600; color:#fff; font-size:20px; font-weight:800;
+                 display:flex; align-items:center; gap:10px; z-index:2; }
+  .cam .regbar button { margin-left:auto; background:#fff; color:#b06f00; font-weight:700; padding:8px 14px; }
+  button.regb { background:#fff4d6; color:#8a5a00; font-weight:700; }
+  .steps { text-align:left; background:#f4f5f7; border-radius:10px; padding:10px 14px; margin:12px 0; font-size:15px; line-height:1.9; }
 </style>
 </head>
 <body>
@@ -91,6 +98,8 @@ var S = { staff: [], busy: false };
 var CAM = { stream: null, video: null, timer: null, idleAt: 0, lastCode: '', lastAt: 0 };
 var PAD = null;
 var GUIDE = 'QRカードをカメラに向けてください（画面のどこに映ってもOK）';
+var REG_GUIDE = '番号登録：QRカードをカメラに向けてください';
+var REG = { on: false, timer: null };  // 番号登録モード（打刻しない）
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
@@ -164,6 +173,7 @@ function render() {
       + '<div class="tips">コツ：カメラから20〜30cmくらいで、QRを1〜2秒止める。スマホの画面なら明るさを上げる</div></div>'
       + '<div class="side"><h3 id="sideTitle">今日の出勤者</h3><div class="sub" id="sideSub"></div><div id="todayList"></div>'
       + '<div class="sbtn"><button class="big p" onclick="endOfDay()">業務終了（Excel用に出す）</button>'
+      + '<button class="big regb" onclick="startReg()">🔑 番号登録・変更（打刻しない）</button>'
       + '<div class="row2"><button onclick="openAdmin()">管理</button><button onclick="location.reload()">更新</button><button onclick="switchCam()">カメラ切替</button></div>'
       + '<div class="sub" id="camName" style="margin-top:8px"></div></div></div>'
       + '</div>';
@@ -274,7 +284,8 @@ function startCam() {
       if (!saved) preferFront(); // 初回：背面が選ばれていたら前面に切り替える
       var box = $('camBox');
       box.className = 'cam'; box.onclick = null;
-      box.innerHTML = '<video id="vid" playsinline muted autoplay></video><div class="flash" id="flash"></div><div class="guide" id="guide">' + GUIDE + '</div>';
+      box.innerHTML = '<video id="vid" playsinline muted autoplay></video><div class="flash" id="flash"></div><div class="guide" id="guide">' + (REG.on ? REG_GUIDE : GUIDE) + '</div>';
+      if (REG.on) regBar();
       CAM.video = $('vid');
       CAM.video.srcObject = st;
       CAM.idleAt = Date.now();
@@ -359,6 +370,13 @@ function scan() {
   if (code.indexOf('ACLASS-T:') !== 0) { guide('ACLASSの打刻カードではありません'); setTimeout(function () { guide(GUIDE); }, 2500); return; }
   S.busy = true;
   guide('読み取りました。確認しています…');
+  if (REG.on) {
+    if (REG.timer) clearTimeout(REG.timer);
+    return api('scanQr', [CFG.d, code, 'reg']).then(function (r) {
+      if (!r.ok) return msgBox('番号登録', r.msg, ready);
+      regFlow(r);
+    });
+  }
   api('scanQr', [CFG.d, code]).then(function (r) {
     if (!r.ok) return msgBox(r.dup ? '打刻済み' : '打刻できません', dupMsg(r), ready);
     askPin(r);
@@ -381,7 +399,7 @@ function normCode(v) {
 }
 
 /* keep=true（打刻できた直後）：同じカードを10秒間は読み直さない（かざしたままでも「打刻済み」が出ない） */
-function ready(keep) { S.busy = false; CAM.idleAt = Date.now(); if (keep) CAM.lastAt = Date.now(); else CAM.lastCode = ''; guide(GUIDE); }
+function ready(keep) { S.busy = false; CAM.idleAt = Date.now(); if (keep) CAM.lastAt = Date.now(); else CAM.lastCode = ''; guide(REG.on ? REG_GUIDE : GUIDE); if (REG.on) regTimer(); }
 
 /* ========== 番号 ========== */
 
@@ -426,11 +444,81 @@ function askNewPin(name, msg, cb) {
 function sendPin(r, pin, newPin) {
   api('punchPin', [CFG.d, r.ticket, pin, newPin]).then(function (x) {
     if (x.ok) { if (x.today) { S.today = x.today; renderToday(); } return showResult(x); } // 右の一覧はその場で更新
+    if (x.needNew && !newPin) return tempChoice(r, pin); // 仮番号：番号登録だけにするか、出勤も記録するか選ぶ
     if (x.needNew) return askNewPin(r.name, x.msg, function (np) { sendPin(r, pin, np); });
     if (x.expired || x.net) return msgBox(x.dup ? '打刻済み' : '打刻できません', dupMsg(x), ready);
     askPin(r, x.msg || 'できませんでした'); // 番号ちがい：2分以内なら打ち直せる
   });
 }
+
+/* ========== 番号登録モード（打刻しない）==========
+   初めての説明のとき：QR → 仮番号 → 自分の番号を2回 → 登録だけして終わり（出勤は記録されない）
+   番号を変えたいとき：QR → いまの番号 → 新しい番号を2回 */
+function startReg() {
+  if (S.busy) return;
+  REG.on = true;
+  openOv('<div class="who">🔑 番号登録・変更</div><div class="steps">① QRカードをカメラにかざす<br>② 仮番号（番号を変える人は、いまの番号）を入れる<br>③ 自分で決めた4桁を2回入れる</div>'
+    + '<div class="hint" style="margin-bottom:14px"><b>このモードでは出勤・退勤は記録されません</b></div><button class="big p" onclick="closeOv();regGo()">はじめる</button>'
+    + '<div style="height:8px"></div><button class="big" onclick="closeOv();stopReg()">やめる</button>');
+}
+function regGo() {
+  var box = $('camBox');
+  if (!CAM.stream) startCam(); else regBar();
+  guide(REG_GUIDE); regTimer();
+}
+function regBar() {
+  var box = $('camBox'); if (!box) return;
+  box.classList.add('reg');
+  if (!$('regbar')) { var b = document.createElement('div'); b.className = 'regbar'; b.id = 'regbar'; b.innerHTML = '🔑 番号登録モード（打刻されません）<button onclick="event.stopPropagation();stopReg()">終わる</button>'; box.appendChild(b); }
+}
+function regTimer() { if (REG.timer) clearTimeout(REG.timer); REG.timer = setTimeout(function () { if (!S.busy) stopReg(); }, 90000); } // 90秒何もなければ打刻に戻る
+function stopReg() {
+  REG.on = false; if (REG.timer) clearTimeout(REG.timer); REG.timer = null;
+  var b = $('regbar'); if (b) b.remove();
+  var box = $('camBox'); if (box) box.classList.remove('reg');
+  S.busy = false; CAM.lastCode = ''; guide(GUIDE);
+}
+function regFlow(r) {
+  if (r.pinState === 'none') return msgBox(r.name + ' さん', '番号がまだありません。責任者に仮番号をもらってください', ready);
+  var temp = r.pinState === 'temp';
+  regAskCur(r, temp, '');
+}
+function regAskCur(r, temp, msg) {
+  pinPad({ title: r.name + '　番号' + (temp ? '登録' : '変更'), hint: temp ? '仮番号（4桁）' : 'いまの番号（4桁）', msg: msg, cancel: ready, done: function (pin) {
+    api('registerPin', [CFG.d, r.ticket, pin, null]).then(function (x) {
+      if (x.needNew) return regAskNew(r, pin, temp, '');
+      if (x.expired || x.net) return msgBox('番号登録', x.msg, ready);
+      regAskCur(r, temp, x.msg || 'できませんでした');
+    });
+  } });
+}
+function regAskNew(r, pin, temp, msg) {
+  askNewPin(r.name, msg || (temp ? '自分だけが分かる4桁を決めます' : '新しい番号を決めます'), function (np) {
+    api('registerPin', [CFG.d, r.ticket, pin, np]).then(function (x) {
+      if (x.ok) return regDone(x);
+      if (x.needNew) return regAskNew(r, pin, temp, x.msg);
+      return msgBox('番号登録', x.msg || 'できませんでした', ready);
+    });
+  });
+}
+function regDone(x) {
+  openOv('<div class="res"><div class="who">' + esc(x.name) + ' さん</div><div class="k in" style="font-size:30px">✅ 番号を' + esc(x.kind) + 'しました</div>'
+    + '<div class="ex" style="font-size:17px;margin-top:10px"><b>打刻はしていません。</b><br>出勤・退勤のときは、QRをかざして今の番号を入れます。<br>番号は人に教えないでください</div></div>'
+    + '<div style="height:14px"></div><button class="big p" onclick="closeOv();ready(true)">続けて別の人を登録</button><div style="height:8px"></div>'
+    + '<button class="big" onclick="closeOv();stopReg();ready(true)">登録を終わる</button>');
+  S.busy = true;
+}
+/* 打刻の途中で仮番号だと分かったとき：番号登録だけか、出勤（退勤）も記録するか */
+function tempChoice(r, pin) {
+  openOv('<div class="who">' + esc(r.name) + ' さん</div><div class="hint" style="margin:10px 0 16px;font-size:16px">はじめての番号登録です。自分の番号を決めます</div>'
+    + '<button class="big p" onclick="tcReg(\'' + pin + '\')">番号登録だけ（打刻しない）</button><div style="height:8px"></div>'
+    + '<button class="big" onclick="tcPunch(\'' + pin + '\')">番号を決めて ' + esc(r.kind) + ' も記録</button><div style="height:8px"></div>'
+    + '<button class="big" onclick="closeOv();ready()">やめる</button>');
+  TC = r;
+}
+var TC = null;
+function tcReg(pin) { var r = TC; closeOv(); regAskNew(r, pin, true, ''); }
+function tcPunch(pin) { var r = TC; closeOv(); askNewPin(r.name, '', function (np) { sendPin(r, pin, np); }); }
 
 function showResult(r) {
   var c = r.kind === '退勤' ? 'out' : 'in';
